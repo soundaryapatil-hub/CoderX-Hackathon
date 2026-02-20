@@ -1,0 +1,178 @@
+html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Women Safety Route Analysis (W3Schools)</title>
+
+  <!-- Leaflet (Free OpenStreetMap) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    body { font-family: Arial; text-align: center; padding: 10px; }
+    .box {
+      height: 420px;
+      border: 2px solid black;
+      margin: 20px auto;
+      width: 90%;
+      max-width: 950px;
+    }
+    #map { height: 100%; width: 100%; } /* MUST */
+    .safe { color: green; font-weight: bold; }
+    .danger { color: red; font-weight: bold; }
+    select { padding: 6px; margin: 0 5px; }
+    button { padding: 8px 14px; cursor: pointer; }
+    .note { font-size: 12px; color: #444; max-width: 950px; margin: 0 auto; }
+  </style>
+</head>
+
+<body>
+  <h2>Women Safety Route Analysis</h2>
+
+  <select id="source"></select>
+  <select id="destination"></select>
+
+  <select id="time">
+    <option value="0">Day</option>
+    <option value="1">Night</option>
+  </select>
+
+  <br><br>
+  <button id="btn">Check Safety</button>
+
+  <div class="box">
+    <div id="map"></div>
+  </div>
+
+  <h3 id="result"></h3>
+  <p class="note">
+    Road route is drawn using OSRM (free public routing). If OSRM is blocked in your network/browser,
+    the app will automatically fall back to a straight line.
+  </p>
+
+  <script>
+    // ====== Data (edit lat/lng if you want exact points) ======
+    const areas = {
+      "Rani Chennamma Circle": { crime: 14, crowd: 27, lat: 15.8497, lng: 74.4977 },
+      "Tilakwadi":            { crime: 16, crowd: 25, lat: 15.8526, lng: 74.5057 },
+      "Shahapur":             { crime: 29, crowd: 25, lat: 15.8466, lng: 74.5169 },
+      "Angol":                { crime: 15, crowd: 17, lat: 15.8589, lng: 74.5085 },
+      "KLE Hospital":         { crime: 3, crowd: 58, lat: 15.8572, lng: 74.5257 }
+    };
+
+    // ====== Fill dropdowns ======
+    const sourceSel = document.getElementById("source");
+    const destSel = document.getElementById("destination");
+
+    Object.keys(areas).forEach(name => {
+      const o1 = document.createElement("option");
+      o1.textContent = name;
+      sourceSel.appendChild(o1);
+
+      const o2 = document.createElement("option");
+      o2.textContent = name;
+      destSel.appendChild(o2);
+    });
+
+    sourceSel.value = "Tilakwadi";
+    destSel.value = "Rani Chennamma Circle";
+
+    // ====== Risk formula (same as your Python) ======
+    function calculateRisk(crime1, crowd1, crime2, crowd2, time) {
+      const avgCrime = (crime1 + crime2) / 2;
+      const avgCrowd = (crowd1 + crowd2) / 2;
+      const risk = (avgCrime * 0.6) + (time * 4) - (avgCrowd * 0.3);
+      return Math.round(risk * 100) / 100;
+    }
+
+    // ====== Map init ======
+    const map = L.map("map").setView([15.8526, 74.5057], 13);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap"
+    }).addTo(map);
+
+    let sourceMarker = null;
+    let destMarker = null;
+    let routeLine = null;
+
+    function clearOldRoute() {
+      if (sourceMarker) map.removeLayer(sourceMarker);
+      if (destMarker) map.removeLayer(destMarker);
+      if (routeLine) map.removeLayer(routeLine);
+    }
+
+    function drawStraightLineRoute(s, d) {
+      routeLine = L.polyline([[s.lat, s.lng], [d.lat, d.lng]], { weight: 6 }).addTo(map);
+      map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
+    }
+
+    // ====== REAL ROAD ROUTE (OSRM) ======
+    async function drawRoute(sourceName, destName) {
+      const s = areas[sourceName];
+      const d = areas[destName];
+
+      clearOldRoute();
+
+      sourceMarker = L.marker([s.lat, s.lng]).addTo(map).bindPopup("Source: " + sourceName);
+      destMarker   = L.marker([d.lat, d.lng]).addTo(map).bindPopup("Destination: " + destName);
+
+      const url =
+        "https://router.project-osrm.org/route/v1/driving/" +
+        `${s.lng},${s.lat};${d.lng},${d.lat}` +
+        "?overview=full&geometries=geojson";
+
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("OSRM HTTP error: " + res.status);
+
+        const data = await res.json();
+        if (!data.routes || !data.routes.length) throw new Error("No routes returned");
+
+        // OSRM returns GeoJSON coords as [lng, lat]
+        const coords = data.routes[0].geometry.coordinates;
+        const latLngs = coords.map(c => [c[1], c[0]]);
+
+        routeLine = L.polyline(latLngs, { weight: 6 }).addTo(map);
+        map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
+
+      } catch (err) {
+        console.warn("OSRM failed, using straight line:", err);
+        // Fallback: straight line so app still works everywhere
+        drawStraightLineRoute(s, d);
+      }
+    }
+
+    // ====== Main button action ======
+    async function checkRoute() {
+      const source = sourceSel.value;
+      const destination = destSel.value;
+      const time = parseInt(document.getElementById("time").value, 10);
+
+      // Draw route (road route if possible)
+      await drawRoute(source, destination);
+
+      // Calculate risk (frontend)
+      const s = areas[source];
+      const d = areas[destination];
+      const score = calculateRisk(s.crime, s.crowd, d.crime, d.crowd, time);
+
+      const result = document.getElementById("result");
+      if (score > 7) {
+        result.innerHTML = "⚠ High Risk Route | Score: " + score;
+        result.className = "danger";
+      } else {
+        result.innerHTML = "✅ Safer Route | Score: " + score;
+        result.className = "safe";
+      }
+    }
+
+    document.getElementById("btn").addEventListener("click", checkRoute);
+
+    // Draw initial route on load
+    drawRoute(sourceSel.value, destSel.value);
+  </script>
+</body>
+</html>
